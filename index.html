@@ -8,7 +8,7 @@
 @media(max-width:580px){main{padding:22px 16px}.page-head{flex-direction:column;gap:15px;margin-bottom:20px}h1{font-size:29px}.hero{padding:24px;min-height:250px}.hero-copy{width:100%}.hero-art{opacity:.12;right:-30px;top:8px;width:250px}.hero h2{font-size:31px;max-width:310px}.hero p{max-width:300px}.hero .eyebrow{font-size:9px}.stats{grid-template-columns:1fr 1fr;gap:10px;margin-bottom:24px}.stat strong{font-size:29px}.tools{grid-template-columns:1fr}.tool{padding:18px 18px 18px 66px;min-height:93px}.tool-icon{position:absolute;left:18px;top:19px}.tool h3{margin:0 22px 5px 0}.tool p{max-width:100%}.tool .arrow{top:18px}.grid{grid-template-columns:1fr}.mo-grid{grid-template-columns:1fr 1fr}.section-head{gap:10px}.section-head h2{font-size:18px}.section-head .btn{font-size:11px}.toolbar{padding:13px;gap:10px}.toolbar .field{min-width:calc(50% - 10px)}.toolbar .field:first-child{flex-basis:100%}.form-grid{grid-template-columns:1fr}.full{grid-column:auto}.panel{padding:20px}.dialog-body{padding:20px}.dialog-head{padding:16px 20px}.detail-meta{grid-template-columns:1fr 1fr}.detail-title{font-size:24px}.project-row{align-items:flex-start;flex-direction:column}.footnote{flex-direction:column;gap:5px}.search input{font-size:12px}.search{gap:2px}.search .icon{width:18px}.lang button{padding:4px 6px}.top-actions{margin-left:0}.topbar{gap:7px;padding-inline:10px}.btn{padding:10px 13px}}
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}
 @media print{body{background:#fff;color:#000;font-size:11pt}.sidebar,.topbar,.footnote,.mobile-shade,.toast,.banner,main,.no-print{display:none!important}dialog[open]{position:static;display:block;max-height:none;overflow:visible;width:100%;border:0;margin:0;padding:0}dialog::backdrop{display:none}.dialog-head{position:static;padding:0 0 15px}.dialog-head button{display:none}.dialog-body{padding:0}.detail-section{break-inside:avoid}.detail-meta div{border:1px solid #ddd}.print-only{display:block;margin-top:20px;font-size:10px}.actions{display:none!important}a{word-break:break-all}}
-</style></head><body>
+</style><script src="supabase-config.js"></script></head><body>
 <a class="skip" href="#main">К содержимому / Мазмұнға өту</a><aside class="sidebar" id="sidebar"></aside><button class="mobile-shade" data-action="close-menu" aria-label="Закрыть меню / Мәзірді жабу"></button>
 <div class="layout"><header class="topbar" id="topbar"></header><div id="storage-banner" class="banner" hidden></div><main id="main" tabindex="-1"></main></div>
 <dialog id="modal" aria-labelledby="modal-title"></dialog><div class="toast" role="status" aria-live="polite" id="toast"></div><input type="file" accept=".json,application/json" id="import-file" hidden>
@@ -1282,6 +1282,9 @@ module.exports = QRCode;
 const SOURCE_HTML='<!DOCTYPE html>\n'+document.documentElement.outerHTML;
 const SEED=JSON.parse(document.getElementById('seed-data').textContent);
 const STORAGE='sfera-znaniy.workspace.v1';
+const CLOUD_CONFIG=globalThis.SFERA_SUPABASE||{};
+const CLOUD_ENABLED=Boolean(CLOUD_CONFIG.url&&CLOUD_CONFIG.anonKey);
+let cloudUser=null, cloudToken='',cloudReady=false,cloudOwners=new Map();
 const clone=x=>JSON.parse(JSON.stringify(x));
 let storageOk=true,loadError=false;
 let state={version:1,revision:SEED.revision,config:clone(SEED.config),lessons:clone(SEED.lessons),favorites:[],projects:[],qrLinks:[],language:'ru'};
@@ -1314,11 +1317,54 @@ function validateState(x){
  const qids=new Set();const qrLinks=x.qrLinks.map(q=>{const id=str(q.id,100);if(qids.has(id))throw Error('Invalid QR');qids.add(id);return{id,title:str(q.title,200),url:safeURL(q.url)};});
  return {version:1,revision:str(x.revision,100),config:{school:str(x.config.school,250),schoolKk:str(x.config.schoolKk,250)},lessons,projects,qrLinks,favorites:[...new Set(x.favorites.filter(id=>typeof id==='string'&&ids.has(id)))],language:x.language==='kk'?'kk':'ru'};
 }
-try{const stored=localStorage.getItem(STORAGE);if(stored)state=validateState(JSON.parse(stored));}catch(e){storageOk=false;loadError=true;}
+try{const stored=localStorage.getItem(STORAGE);if(stored){const local=validateState(JSON.parse(stored));state=CLOUD_ENABLED?{...local,lessons:clone(SEED.lessons)}:local;}}catch(e){storageOk=false;loadError=true;}
+// Shared catalog: Supabase Auth (anonymous) + PostgREST with RLS.
+const cloudUrl=()=>CLOUD_CONFIG.url.replace(/\/$/,'');
+async function cloudRequest(path,{method='GET',body,auth=false,headers={}}={}){
+ const response=await fetch(cloudUrl()+path,{method,headers:{apikey:CLOUD_CONFIG.anonKey,Authorization:'Bearer '+(auth?cloudToken:CLOUD_CONFIG.anonKey),...(body?{'Content-Type':'application/json'}:{}),...headers},...(body?{body:JSON.stringify(body)}:{})});
+ if(!response.ok){let message='HTTP '+response.status;try{const error=await response.json();message=error.message||error.msg||error.error_description||message;}catch{}throw Error(message);}
+ if(response.status===204)return null;const raw=await response.text();return raw?JSON.parse(raw):null;
+}
+async function cloudInit(){
+ if(!CLOUD_ENABLED)return;
+ try{
+  const key='sfera.supabase.session.'+cloudUrl();let session=null;
+  try{session=JSON.parse(localStorage.getItem(key)||'null');}catch{}
+  if(session?.refresh_token){try{session=await cloudRequest('/auth/v1/token?grant_type=refresh_token',{method:'POST',body:{refresh_token:session.refresh_token}});}catch{session=null;}}
+  if(!session?.access_token)session=await cloudRequest('/auth/v1/signup',{method:'POST',body:{data:{}}});
+  if(!session?.access_token||!session?.user?.id)throw Error('В Supabase включите Anonymous Sign-ins (Authentication → Providers).');
+  cloudToken=session.access_token;cloudUser=session.user.id;
+  try{localStorage.setItem(key,JSON.stringify(session));}catch{}
+  cloudReady=true;await cloudRefresh();
+ }catch(e){cloudReady=false;console.error('Supabase:',e);notify('Общий каталог недоступен: '+e.message);renderBanner();}
+}
+async function cloudRefresh(){
+ if(!cloudReady)return;
+ const rows=await cloudRequest('/rest/v1/lessons?select=id,owner_id,data&order=created_at.asc&limit=5000');
+ cloudOwners=new Map(rows.map(r=>[r.id,r.owner_id]));
+ const shared=rows.map(r=>r.data).filter(l=>l&&typeof l.id==='string');
+ state.lessons=[...shared,...SEED.lessons.filter(l=>!shared.some(r=>r.id===l.id))];
+ render();renderBanner();
+}
+async function cloudWrite(lesson){
+ if(!cloudReady)throw Error('Нет подключения к общей базе. Карточка не сохранена.');
+ const owner=cloudOwners.get(lesson.id);
+ if(owner&&owner!==cloudUser)throw Error('Редактировать карточку может только её автор.');
+ if(lesson.id.startsWith('source-')&&!owner)throw Error('Исходные карточки доступны только для чтения. Создайте новую карточку.');
+ if(owner){await cloudRequest('/rest/v1/lessons?id=eq.'+encodeURIComponent(lesson.id),{method:'PATCH',auth:true,body:{data:lesson}});}
+ else{await cloudRequest('/rest/v1/lessons',{method:'POST',auth:true,body:{id:lesson.id,owner_id:cloudUser,data:lesson}});}
+ await cloudRefresh();
+}
+async function cloudDelete(id){
+ if(!cloudReady)throw Error('Нет подключения к общей базе.');
+ if(cloudOwners.get(id)!==cloudUser)throw Error('Удалять карточку может только её автор.');
+ await cloudRequest('/rest/v1/lessons?id=eq.'+encodeURIComponent(id),{method:'DELETE',auth:true});
+ await cloudRefresh();
+}
 function save(){try{localStorage.setItem(STORAGE,JSON.stringify(state));storageOk=true;}catch(e){storageOk=false;}renderBanner();return storageOk;}
 function notify(msg){$('#toast').textContent=msg;clearTimeout(notify.timer);notify.timer=setTimeout(()=>$('#toast').textContent='',4500);}
-function saved(){notify(storageOk?t('Сохранено в этом браузере','Осы браузерде сақталды'):t('Изменения пока в памяти. Скачайте резервную копию.','Өзгерістер уақытша жадта. Сақтық көшірмені жүктеңіз.'));}
-function renderBanner(){const b=$('#storage-banner');b.hidden=storageOk&&state.revision===SEED.revision;if(!storageOk)b.innerHTML=esc(t('Браузер не сохранил данные или сохранённая копия повреждена. Работа доступна, но перед закрытием скачайте резервную копию в настройках.','Браузер деректерді сақтамады немесе сақталған көшірме бүлінген. Жабар алдында баптаулардан сақтық көшірмені жүктеңіз.'));else b.innerHTML=esc(t('В файле есть новая версия каталога. Примените её в настройках; личный план сохранится.','Файлда каталогтың жаңа нұсқасы бар. Оны баптауларда қолданыңыз; жеке жоспар сақталады.'));}
+function saved(){notify(CLOUD_ENABLED?t('Сохранено в общей базе','Ортақ дерекқорға сақталды'):storageOk?t('Сохранено в этом браузере','Осы браузерде сақталды'):t('Изменения пока в памяти. Скачайте резервную копию.','Өзгерістер уақытша жадта. Сақтық көшірмені жүктеңіз.'));}
+function renderBanner(){const b=$('#storage-banner');if(CLOUD_ENABLED){b.hidden=false;b.textContent=cloudReady?'Общий каталог Supabase подключён. Личные настройки и избранное остаются в этом браузере.':'Общая база не подключена. Создание и изменение карточек временно недоступно.';return;}b.hidden=storageOk&&state.revision===SEED.revision;if(!storageOk)b.innerHTML=esc(t('Браузер не сохранил данные или сохранённая копия повреждена. Работа доступна, но перед закрытием скачайте резервную копию в настройках.','Браузер деректерді сақтамады немесе сақталған көшірме бүлінген. Жабар алдында баптаулардан сақтық көшірмені жүктеңіз.'));else b.innerHTML=esc(t('В файле есть новая версия каталога. Примените её в настройках; личный план сохранится.','Файлда каталогтың жаңа нұсқасы бар. Оны баптауларда қолданыңыз; жеке жоспар сақталады.'));}
 function navigate(path){if(location.hash==='#'+path)render();else location.hash=path;$('#sidebar').classList.remove('open');}
 function readRoute(){const [page,query='']=location.hash.slice(1).split('?');route=['home','catalog','favorites','qr','training','plan','analytics','assistant','settings'].includes(page)?page:'home';const params=new URLSearchParams(query);if(params.get('lang')==='kk'){state.language='kk';save();}if(route==='catalog'||route==='favorites'){filters={q:params.get('q')||'',mo:params.get('mo')||'',subject:params.get('subject')||'',grade:'',month:'',language:'',status:''};}render();window.scrollTo(0,0);}
 function renderShell(){
@@ -1359,7 +1405,7 @@ document.addEventListener('click',async e=>{const el=e.target.closest('[data-act
  else if(a==='favorite'){state.favorites=state.favorites.includes(id)?state.favorites.filter(x=>x!==id):[...state.favorites,id];save();render();}
  else if(a==='mo')navigate('catalog?mo='+id);else if(a==='go-catalog')navigate('catalog');
  else if(a==='reset-filters'){filters={q:'',mo:'',subject:'',grade:'',month:'',language:'',status:''};history.replaceState(null,'','#'+route);render();}
- else if(a==='delete-lesson'){if(confirm(t('Удалить карточку из этой копии? Связанные записи плана останутся.','Карточканы осы көшірмеден жою керек пе? Жоспар жазбалары сақталады.'))){state.lessons=state.lessons.filter(l=>l.id!==id);state.favorites=state.favorites.filter(x=>x!==id);state.projects.forEach(p=>{if(p.lessonId===id)p.lessonId='';});save();closeModal();render();saved();}}
+ else if(a==='delete-lesson'){if(confirm(t('Удалить карточку?','Карточканы жою керек пе?'))){if(CLOUD_ENABLED)await cloudDelete(id);state.lessons=state.lessons.filter(l=>l.id!==id);state.favorites=state.favorites.filter(x=>x!==id);state.projects.forEach(p=>{if(p.lessonId===id)p.lessonId='';});save();closeModal();render();saved();}}
  else if(a==='print')window.print();else if(a==='lesson-txt'){const l=state.lessons.find(x=>x.id===id);download('lesson.txt',lessonText(l));}
  else if(a==='lesson-qr'){const l=state.lessons.find(x=>x.id===id);makeQR(l.url);closeModal();navigate('qr');}
  else if(a==='download-qr'){if(qrSVG)download('sfera-qr.svg',qrSVG,'image/svg+xml');}
@@ -1370,12 +1416,12 @@ document.addEventListener('click',async e=>{const el=e.target.closest('[data-act
  else if(a==='new-project')projectForm();else if(a==='edit-project')projectForm(id);else if(a==='plan-lesson')projectForm('',id);else if(a==='project-filter'){projectFilter=id;render();}
  else if(a==='delete-project'){if(confirm(t('Удалить запись плана и её результат?','Жоспар жазбасы мен нәтижесін жою керек пе?'))){state.projects=state.projects.filter(p=>p.id!==id);save();closeModal();render();}}
  else if(a==='copy-prompt')await copy($('#prompt-output').value);else if(a==='download-prompt'){const txt=$('#prompt-output').value;if(txt.trim())download('sfera-prompt.txt',txt);else notify(t('Сначала соберите запрос.','Алдымен сұрау құрастырыңыз.'));}
- else if(a==='backup')download('sfera-backup-'+day()+'.json',JSON.stringify(state,null,2),'application/json');else if(a==='import')$('#import-file').click();else if(a==='publish-export')publishExport();
- else if(a==='apply-seed'){if(confirm(t('Заменить каталог и название школы из нового файла? Сначала сохраните резервную копию: ваши изменения в карточках будут заменены. План и QR-банк сохранятся.','Каталог пен мектеп атауын жаңа файлдан ауыстыру керек пе? Алдымен сақтық көшірме жасаңыз: карточка өзгерістері ауыстырылады. Жоспар мен QR банкі сақталады.'))){state.lessons=clone(SEED.lessons);state.config=clone(SEED.config);state.revision=SEED.revision;state.favorites=state.favorites.filter(id=>state.lessons.some(l=>l.id===id));state.projects.forEach(p=>{if(!state.lessons.some(l=>l.id===p.lessonId))p.lessonId='';});save();render();saved();}}
+ else if(a==='backup')download('sfera-backup-'+day()+'.json',JSON.stringify(state,null,2),'application/json');else if(a==='import')$('#import-file').click();else if(a==='publish-export'){if(CLOUD_ENABLED)throw Error('В облачном режиме публикация HTML-копии каталога отключена.');publishExport();}
+ else if(a==='apply-seed'){if(CLOUD_ENABLED)throw Error('В облачном режиме обновление исходного каталога выполняется в файле сайта.');if(confirm(t('Заменить каталог и название школы из нового файла? Сначала сохраните резервную копию: ваши изменения в карточках будут заменены. План и QR-банк сохранятся.','Каталог пен мектеп атауын жаңа файлдан ауыстыру керек пе? Алдымен сақтық көшірме жасаңыз: карточка өзгерістері ауыстырылады. Жоспар мен QR банкі сақталады.'))){state.lessons=clone(SEED.lessons);state.config=clone(SEED.config);state.revision=SEED.revision;state.favorites=state.favorites.filter(id=>state.lessons.some(l=>l.id===id));state.projects.forEach(p=>{if(!state.lessons.some(l=>l.id===p.lessonId))p.lessonId='';});save();render();saved();}}
  else if(a==='catalog-csv')download('sfera-catalog.csv',csv([[t('Тема','Тақырып'),t('Предметы','Пәндер'),'МО',t('Класс','Сынып'),t('Месяц','Ай'),t('Статус','Мәртебе'),t('Ссылка','Сілтеме')],...getFiltered(route==='favorites').map(l=>[l.title,l.subjects,tr(MO[l.mo]),l.grade||'',l.month?monthName(l.month):'',tr(STATUS[l.status]),l.url])]),'text/csv;charset=utf-8');
  else if(a==='analytics-csv')download('sfera-analytics.csv',csv([['МО',t('Всего','Барлығы'),t('Идеи','Идеялар'),t('Черновики','Жобалар'),t('Проверено','Тексерілген')],...Object.entries(MO).map(([id,n])=>{const ls=state.lessons.filter(l=>l.mo===id);return[tr(n),ls.length,ls.filter(l=>l.status==='idea').length,ls.filter(l=>l.status==='draft').length,ls.filter(l=>l.status==='ready').length];})]),'text/csv;charset=utf-8');
  }catch(error){notify(error.message||t('Не удалось выполнить действие.','Әрекет орындалмады.'));}});
-document.addEventListener('submit',e=>{e.preventDefault();const f=e.target;if(!(f instanceof HTMLFormElement))return;const d=Object.fromEntries(new FormData(f));try{
+document.addEventListener('submit',async e=>{e.preventDefault();const f=e.target;if(!(f instanceof HTMLFormElement))return;const d=Object.fromEntries(new FormData(f));try{
  if(f.id==='global-search'){navigate('catalog?q='+encodeURIComponent((d.q||'').trim()));}
  else if(f.id==='filters'){filters={...filters,...d};render();}
  else if(f.id==='lesson-form'){
@@ -1383,7 +1429,7 @@ document.addEventListener('submit',e=>{e.preventDefault();const f=e.target;if(!(
   if(d.status==='ready'&&(!Number(d.grade)||!d.goals.trim()||!d.content.trim()||!d.task.trim()))throw Error(t('Для проверенного урока заполните класс, цели, содержание и задание с оцениванием.','Тексерілген сабақ үшін сыныпты, мақсаттарды, мазмұнды және бағалау тапсырмасын толтырыңыз.'));
   const old=state.lessons.find(l=>l.id===editingId);if(!old&&state.lessons.length>=1500)throw Error(t('Достигнут предел: 1500 карточек.','Шекке жетті: 1500 карточка.'));
   const l={id:old?.id||uid(),title:d.title.trim(),subjects:d.subjects.trim(),mo:d.mo,grade:Number(d.grade),month:Number(d.month),language:d.language,status:d.status,goals:d.goals.trim(),content:d.content.trim(),task:d.task.trim(),profession:d.profession.trim(),url:safeURL(d.url.trim()),source:old?.source||'',updated:day()};
-  if(old)state.lessons[state.lessons.indexOf(old)]=l;else state.lessons.unshift(l);save();closeModal();render();saved();
+  if(CLOUD_ENABLED){await cloudWrite(l);closeModal();saved();}else{if(old)state.lessons[state.lessons.indexOf(old)]=l;else state.lessons.unshift(l);save();closeModal();render();saved();}
  }else if(f.id==='qr-form'){makeQR(d.url.trim());$('#qr-preview').innerHTML=qrSVG;$('#qr-actions').hidden=false;}
  else if(f.classList.contains('exercise-form')){const ex=EXERCISES.find(x=>x.id===f.dataset.id);const s=d.answer.trim().replace(',','.');if(!/^-?\d+(\.\d+)?$/.test(s))throw Error(t('Введите число; дробную часть можно отделить запятой.','Сан енгізіңіз; бөлшек бөлігін үтірмен бөлуге болады.'));const ok=Math.abs(Number(s)-ex.answer)<1e-8;$('#feedback-'+ex.id).className='feedback'+(ok?'':' error');$('#feedback-'+ex.id).textContent=(ok?t('Верно! ','Дұрыс! '):t('Пока не совпало. ','Әзірге сәйкес емес. '))+tr(ex.solution);}
  else if(f.id==='project-form'){const total=Number(d.total),achieved=Number(d.achieved);if(!Number.isInteger(total)||!Number.isInteger(achieved)||total<0||total>100000||achieved<0||achieved>total)throw Error(t('Число достигших критерия не может быть больше числа участников.','Критерийге жеткендер саны қатысушылар санынан артық бола алмайды.'));if(d.status==='done'&&total>0&&!d.criterion.trim())throw Error(t('Укажите критерий, по которому посчитан результат.','Нәтиже есептелген критерийді енгізіңіз.'));const old=state.projects.find(x=>x.id===editingId);if(!old&&state.projects.length>=1000)throw Error(t('Достигнут предел: 1000 записей.','Шекке жетті: 1000 жазба.'));const p={id:old?.id||uid(),title:d.title.trim(),lessonId:d.lessonId,date:d.date,status:d.status,notes:d.notes.trim(),criterion:d.criterion.trim(),total,achieved};if(!p.title)throw Error(t('Укажите название.','Атауын енгізіңіз.'));if(old)state.projects[state.projects.indexOf(old)]=p;else state.projects.push(p);save();closeModal();render();saved();}
@@ -1397,4 +1443,5 @@ $('#modal').addEventListener('click',e=>{if(e.target===$('#modal')){const r=e.ta
 window.addEventListener('hashchange',readRoute);
 window.addEventListener('storage',e=>{if(e.key===STORAGE)notify(t('Данные изменены в другой вкладке. Обновите страницу перед редактированием.','Деректер басқа қойындыда өзгерді. Өңдеу алдында бетті жаңартыңыз.'));});
 readRoute();
+cloudInit();
 </script></body></html>
