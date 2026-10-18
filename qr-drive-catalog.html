@@ -6,4 +6,13 @@ const subjects=[...new Set(items.map(x=>x.category))].sort();const subject=docum
 const el=(tag,cls,txt)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(txt!==undefined)n.textContent=txt;return n};
 function render(){const q=document.getElementById('search').value.toLocaleLowerCase().trim();const shown=items.filter(x=>(!subject.value||x.category===subject.value)&&(!grade.value||x.grade===grade.value)&&(!q||(x.title+' '+x.category+' '+x.grade).toLocaleLowerCase().includes(q)));const root=document.getElementById('cards');root.replaceChildren();const frag=document.createDocumentFragment();for(const x of shown){const card=el('article','card');const meta=el('div','meta',x.category+(x.grade==='—'?'':' · '+x.grade+' класс'));card.append(meta,el('h2','',x.title));const actions=el('div','actions');const a=el('a','primary',x.folder?'Открыть папку ↗':'Открыть файл ↗');a.href=x.url;a.target='_blank';a.rel='noopener noreferrer';actions.append(a);const b=el('button','', 'Создать QR');b.type='button';b.addEventListener('click',()=>{try{window.parent.postMessage({type:'sfera-qr-drive-link',title:x.title,url:x.url},location.origin);document.getElementById('notice').textContent='Ссылка передана в генератор QR-кодов выше. Прокрутите страницу к началу раздела.'}catch(e){}});actions.append(b);card.append(actions);frag.append(card)}root.append(frag);document.getElementById('counter').textContent=shown.length+' / '+items.length;document.getElementById('empty').hidden=shown.length>0}
 for(const id of ['search','subject','grade'])document.getElementById(id).addEventListener(id==='search'?'input':'change',render);render();
-</script></body></html>
+</script><!-- QR-ссылка на мобильную версию «Сферы знаний» -->
+<style id="sfera-corner-qr-style">
+.sfera-corner-qr{position:fixed;right:16px;bottom:16px;z-index:2147483000;display:flex;align-items:center;justify-content:center;width:92px;height:92px;padding:5px;background:#fff;border:1px solid #dbe3ed;border-radius:12px;box-shadow:0 4px 18px rgba(15,23,42,.22);box-sizing:border-box;transition:transform .18s ease}
+.sfera-corner-qr:hover,.sfera-corner-qr:focus-visible{transform:scale(1.07);outline:2px solid #2563eb;outline-offset:2px}
+.sfera-corner-qr img{display:block;width:100%;height:100%;object-fit:contain;image-rendering:auto}
+@media(max-width:600px){.sfera-corner-qr{right:10px;bottom:10px;width:64px;height:64px;padding:3px;border-radius:9px}}
+@media print{.sfera-corner-qr{position:fixed;right:10mm;bottom:10mm;box-shadow:none;width:22mm;height:22mm}}
+</style>
+<a class="sfera-corner-qr" href="https://sfera-znanya-20.vercel.app/" target="_blank" rel="noopener noreferrer" aria-label="Открыть «Сферу знаний» на телефоне — QR-код" title="Сканируйте QR-код, чтобы открыть «Сферу знаний» на телефоне"><img src="sfera-mobile-qr.png" width="82" height="82" alt="QR-код: открыть «Сферу знаний» на телефоне" loading="eager"></a>
+</body></html>
