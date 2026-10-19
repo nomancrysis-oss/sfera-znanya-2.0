@@ -5,6 +5,6 @@ const path=require('node:path');
 const root=__dirname, out=path.join(root,'public');
 fs.mkdirSync(out,{recursive:true});
 for(const name of fs.readdirSync(root)){
-  if(name.endsWith('.html')||name==='LICENSE-QR.txt'||name==='sfera-mobile-qr.png'||name==='chemistry-modo.css'||name==='chemistry-modo.js'||name==='chemistry-modo.js'||name==='chemistry-modo.css')fs.copyFileSync(path.join(root,name),path.join(out,name));
+  if(name.endsWith('.html')||name==='LICENSE-QR.txt'||name==='sfera-mobile-qr.png'||name==='chemistry-modo.css'||name==='chemistry-modo.js'||name==='modo-teacher.js')fs.copyFileSync(path.join(root,name),path.join(out,name));
 }
 console.log('Static pages ready in public/');
